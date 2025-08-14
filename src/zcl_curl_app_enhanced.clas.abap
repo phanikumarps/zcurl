@@ -1,25 +1,3 @@
-*MIT License
-*
-*Copyright (c) 2025 BlueFunda
-*
-*Permission is hereby granted, free of charge, to any person obtaining a copy
-*of this software and associated documentation files (the "Software"), to deal
-*in the Software without restriction, including without limitation the rights
-*to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-*copies of the Software, and to permit persons to whom the Software is
-*furnished to do so, subject to the following conditions:
-*
-*The above copyright notice and this permission notice shall be included in all
-*copies or substantial portions of the Software.
-*
-*THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-*IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-*FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-*AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-*LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-*OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-*SOFTWARE.
-
 CLASS zcl_curl_app_enhanced DEFINITION
   PUBLIC
   FINAL
@@ -57,12 +35,21 @@ CLASS zcl_curl_app_enhanced DEFINITION
              value TYPE string,
            END OF ty_environment.
 
+    TYPES: BEGIN OF ty_collection_item,
+             id          TYPE string,
+             name        TYPE string,
+             method      TYPE string,
+             url         TYPE string,
+             description TYPE string,
+           END OF ty_collection_item.
+
     TYPES: tt_headers          TYPE TABLE OF ty_header_row,
            tt_params           TYPE TABLE OF ty_param_row,
            tt_response_headers TYPE TABLE OF ty_response_header,
-           tt_environments     TYPE TABLE OF ty_environment.
+           tt_environments     TYPE TABLE OF ty_environment,
+           tt_collections      TYPE TABLE OF ty_collection_item.
 
-  PRIVATE SECTION.
+    " ALL BINDING DATA MUST BE PUBLIC
     DATA: mv_url              TYPE string,
           mv_method           TYPE string VALUE 'GET',
           mv_request_body     TYPE string,
@@ -79,14 +66,21 @@ CLASS zcl_curl_app_enhanced DEFINITION
           mv_request_desc     TYPE string,
           mv_environment      TYPE string VALUE 'Development',
           mv_timeout          TYPE i VALUE 30,
+          " Simple header fields to avoid complex table binding
+          mv_content_type     TYPE string VALUE 'application/json',
+          mv_authorization    TYPE string,
+          mv_custom_header1   TYPE string,
+          mv_custom_header2   TYPE string,
           mt_headers          TYPE tt_headers,
           mt_params           TYPE tt_params,
           mt_response_headers TYPE tt_response_headers,
-          mt_collections      TYPE zcl_curl_data_manager=>tt_request_items,
+          mt_collections      TYPE tt_collections,
           mt_environments     TYPE tt_environments,
           ms_auth_config      TYPE ty_auth_config,
-          mv_show_save_dialog TYPE abap_bool,
-          mo_client           TYPE REF TO z2ui5_if_client.
+          mv_show_save_dialog TYPE abap_bool.
+
+  PRIVATE SECTION.
+    DATA: mo_client TYPE REF TO z2ui5_if_client.
 
     METHODS: initialize_app,
       handle_send_request,
@@ -96,6 +90,12 @@ CLASS zcl_curl_app_enhanced DEFINITION
       handle_auth_change,
       build_main_view
         IMPORTING io_view TYPE REF TO z2ui5_cl_xml_view,
+      build_url_bar_inline
+        IMPORTING io_vbox TYPE REF TO z2ui5_cl_xml_view,
+      build_request_panel_inline
+        IMPORTING io_vbox TYPE REF TO z2ui5_cl_xml_view,
+      build_response_panel_inline
+        IMPORTING io_vbox TYPE REF TO z2ui5_cl_xml_view,
       build_request_panel
         IMPORTING io_view TYPE REF TO z2ui5_cl_xml_view,
       build_response_panel
@@ -104,53 +104,106 @@ CLASS zcl_curl_app_enhanced DEFINITION
         IMPORTING io_view TYPE REF TO z2ui5_cl_xml_view,
       build_url_bar
         IMPORTING io_view TYPE REF TO z2ui5_cl_xml_view,
-      build_save_dialog
-        IMPORTING io_view TYPE REF TO z2ui5_cl_xml_view,
-      get_method_variant
-        IMPORTING iv_method     TYPE string
-        RETURNING VALUE(result) TYPE string,
-      get_status_state
-        IMPORTING iv_status     TYPE string
-        RETURNING VALUE(result) TYPE string,
       process_environment_vars
         IMPORTING iv_text       TYPE string
         RETURNING VALUE(result) TYPE string,
-      build_headers_from_table
-        RETURNING VALUE(result) TYPE tihttpnvp,
       add_empty_header_row,
-      add_empty_param_row,
-      show_message
-        IMPORTING iv_type TYPE string
-                  iv_text TYPE string.
+      add_empty_param_row.
 
 ENDCLASS.
 
+CLASS zcl_curl_app_enhanced IMPLEMENTATION.
 
+  METHOD z2ui5_if_app~main.
+    mo_client = client.
+    DATA(lo_client) = client->get( ).
+    CASE client->get( )-event.
+      WHEN 'SEND_REQUEST'.
+        handle_send_request( ).
+      WHEN 'SAVE_REQUEST'.
+        handle_save_request( ).
+      WHEN 'LOAD_REQUEST'.
+        IF lines( client->get( )-t_event_arg ) > 0.
+          handle_load_request( lo_client-t_event_arg[ 1 ] ).
+        ENDIF.
+      WHEN 'ADD_HEADER'.
+        add_empty_header_row( ).
+      WHEN 'ADD_PARAM'.
+        add_empty_param_row( ).
+      WHEN 'TAB_SELECT'.
+        IF lines( client->get( )-t_event_arg ) > 0.
+          mv_selected_tab = lo_client-t_event_arg[ 1 ].
+        ENDIF.
+      WHEN 'REQUEST_TAB_SELECT'.
+        IF lines( client->get( )-t_event_arg ) > 0.
+          mv_request_tab = lo_client-t_event_arg[ 1 ].
+        ENDIF.
+      WHEN 'RESPONSE_TAB_SELECT'.
+        IF lines( client->get( )-t_event_arg ) > 0.
+          mv_response_tab = lo_client-t_event_arg[ 1 ].
+        ENDIF.
+      WHEN 'AUTH_CHANGE'.
+        handle_auth_change( ).
+      WHEN 'METHOD_GET'.
+        mv_method = 'GET'.
+      WHEN 'METHOD_POST'.
+        mv_method = 'POST'.
+      WHEN 'METHOD_PUT'.
+        mv_method = 'PUT'.
+      WHEN 'METHOD_DELETE'.
+        mv_method = 'DELETE'.
+      WHEN 'METHOD_PATCH'.
+        mv_method = 'PATCH'.
+      WHEN OTHERS.
+        initialize_app( ).
+    ENDCASE.
 
-CLASS ZCL_CURL_APP_ENHANCED IMPLEMENTATION.
-
-
-  METHOD add_empty_header_row.
-    APPEND VALUE #( key = '' value = '' enabled = abap_false ) TO mt_headers.
+    DATA(view) = z2ui5_cl_xml_view=>factory( ).
+    build_main_view( view ).
+    client->view_display( view->stringify( ) ).
   ENDMETHOD.
 
+  METHOD initialize_app.
+    " Initialize without external dependencies
+    IF mv_url IS INITIAL.
+      mv_url = 'https://jsonplaceholder.typicode.com/posts/1'.
+      mv_response_status = 'Ready to send request'.
+    ENDIF.
 
-  METHOD add_empty_param_row.
-    APPEND VALUE #( key = '' value = '' enabled = abap_false ) TO mt_params.
+    " Initialize default headers if empty
+    IF lines( mt_headers ) = 0.
+      APPEND VALUE #( key = 'Content-Type' value = 'application/json' enabled = abap_true ) TO mt_headers.
+      APPEND VALUE #( key = 'Accept' value = 'application/json' enabled = abap_true ) TO mt_headers.
+      add_empty_header_row( ).
+    ENDIF.
+
+    " Initialize default params if empty
+    IF lines( mt_params ) = 0.
+      add_empty_param_row( ).
+    ENDIF.
+
+    " Initialize sample environments
+    IF lines( mt_environments ) = 0.
+      APPEND VALUE #( name = 'Development' value = 'https://api-dev.example.com' ) TO mt_environments.
+      APPEND VALUE #( name = 'Staging' value = 'https://api-staging.example.com' ) TO mt_environments.
+      APPEND VALUE #( name = 'Production' value = 'https://api.example.com' ) TO mt_environments.
+    ENDIF.
+
+    " Initialize sample collections
+    IF lines( mt_collections ) = 0.
+      APPEND VALUE #( id = '1' name = 'Get Posts' method = 'GET'
+                     url = 'https://jsonplaceholder.typicode.com/posts'
+                     description = 'Get all posts' ) TO mt_collections.
+      APPEND VALUE #( id = '2' name = 'Get User' method = 'GET'
+                     url = 'https://jsonplaceholder.typicode.com/users/1'
+                     description = 'Get user by ID' ) TO mt_collections.
+    ENDIF.
   ENDMETHOD.
-
-
-  METHOD build_headers_from_table.
-    LOOP AT mt_headers INTO DATA(header) WHERE enabled = abap_true AND key IS NOT INITIAL.
-      APPEND VALUE #( name = header-key value = process_environment_vars( header-value ) ) TO result.
-    ENDLOOP.
-  ENDMETHOD.
-
 
   METHOD build_main_view.
-    " Main page with split container layout
+    " Simplified main page layout using proper UI5 controls
     DATA(page) = io_view->shell( )->page(
-      title = 'ZCurl - Advanced REST Client'
+      title = 'ZCurl - Enhanced REST Client'
       shownavbutton = abap_false
       class = 'sapUiContentPadding' ).
 
@@ -165,527 +218,535 @@ CLASS ZCL_CURL_APP_ENHANCED IMPLEMENTATION.
       |.curl-status-error \{ color: #f93e3e; \}| &&
       |.curl-status-warning \{ color: #fca130; \}| ).
 
-    " Use split_container with master/detail
-    DATA(split_container) = page->split_container( ).
+    " Use proper UI5 VBox layout
+    DATA(main_vbox) = page->vbox( class = 'sapUiMediumMargin' ).
 
-    " Sidebar (master page)
-    build_sidebar( split_container->master_pages( ) ).
+    " Collections section (simplified sidebar)
+    DATA(collections_panel) = main_vbox->panel(
+      headertext = 'Saved Requests'
+      expanded = abap_false
+      class = 'sapUiResponsiveMargin' ).
 
-    " Main content area (detail page)
-    DATA(detail_page) = split_container->detail_pages( )->page(
-      title = 'Request Builder' ).
-
-    build_url_bar( detail_page ).
-    build_request_panel( detail_page ).
-    build_response_panel( detail_page ).
-
-  ENDMETHOD.
-
-
-  METHOD build_request_panel.
-    " Request panel content
-    DATA(request_panel) = io_view->content( )->panel(
-      headertext = 'Request Configuration'
-      expanded = abap_true ).
-
-    " Parameters section
-    request_panel->content( )->panel(
-      headertext = 'Parameters'
-      expanded = abap_true
-    )->content( )->table(
-      items = mo_client->_bind( mt_params )
-      growing = abap_true
-      growingthreshold = '10'
-    )->columns(
-      )->column( )->text( text = 'Key'
-      )->column( )->text( text = 'Value'
-      )->column( )->text( text = 'Enabled'
-      )->column(
-    )->items( )->column_list_item(
-      )->cells(
-        )->input( value = mo_client->_bind_edit( 'key' ) placeholder = 'Parameter key'
-        )->input( value = mo_client->_bind_edit( 'value' ) placeholder = 'Parameter value'
-        )->checkbox( selected = mo_client->_bind_edit( 'enabled' )
-        )->button( icon = 'sap-icon://add' press = mo_client->_event( 'ADD_PARAM' ) type = 'Transparent'  ).
-
-    " Headers section
-   request_panel->content( )->panel(
-      headertext = 'Headers'
-      expanded = abap_true
-    )->content( )->table(
-      items = mo_client->_bind( mt_headers )
-      growing = abap_true
-    )->columns(
-      )->column( )->text( text = 'Key'
-      )->column( )->text( text = 'Value'
-      )->column( )->text( text = 'Enabled'
-      )->column(
-    )->items( )->column_list_item(
-      )->cells(
-        )->input( value = mo_client->_bind_edit( 'key' ) placeholder = 'Header key'
-        )->input( value = mo_client->_bind_edit( 'value' ) placeholder = 'Header value'
-        )->checkbox( selected = mo_client->_bind_edit( 'enabled' )
-        )->button( icon = 'sap-icon://add' press = mo_client->_event( 'ADD_HEADER' ) type = 'Transparent' ).
-
-    " Body section
-    request_panel->content( )->panel(
-      headertext = 'Request Body'
-      expanded = abap_true
-    )->content( )->text_area(
-      value = mo_client->_bind_edit( mv_request_body )
-      placeholder = 'Enter request body (JSON, XML, etc.)...'
-      rows = '15'
-      width = '100%' ).
-
-    " Auth section
-    request_panel->content( )->panel(
-      headertext = 'Authentication'
-      expanded = abap_true
-    )->content( )->vbox( )->items(
-      )->combobox(
-        selectedkey = mo_client->_bind_edit( mv_auth_tab )
-        selectionchange = mo_client->_event( 'AUTH_CHANGE' )
-        items = mo_client->_bind( VALUE z2ui5_cl_util=>ty_t_name_value(
-          ( n = 'No Auth' v = 'none' )
-          ( n = 'Bearer Token' v = 'bearer' )
-          ( n = 'Basic Auth' v = 'basic' )
-          ( n = 'API Key' v = 'apikey' ) ) ) ).
-
-    " Conditional auth fields based on type
-    CASE ms_auth_config-type.
-      WHEN 'bearer'.
-        request_panel->content( )->panel(
-          headertext = 'Bearer Token'
-          expanded = abap_true
-        )->content( )->input(
-          value = mo_client->_bind_edit( ms_auth_config-token )
-          type = 'Password'
-          placeholder = 'Enter bearer token' ).
-      WHEN 'basic'.
-        request_panel->content( )->panel(
-          headertext = 'Basic Authentication'
-          expanded = abap_true
-        )->content( )->vbox( )->items(
-          )->input(
-            value = mo_client->_bind_edit( ms_auth_config-user )
-            placeholder = 'Username'
-          )->input(
-            value = mo_client->_bind_edit( ms_auth_config-pass )
-            type = 'Password'
-            placeholder = 'Password' ).
-      WHEN 'apikey'.
-        request_panel->content( )->panel(
-          headertext = 'API Key'
-          expanded = abap_true
-        )->content( )->input(
-          value = mo_client->_bind_edit( ms_auth_config-token )
-          type = 'Password'
-          placeholder = 'Enter API key' ).
-    ENDCASE.
-
-  ENDMETHOD.
-
-
-  METHOD build_response_panel.
-    " Response panel content
-    DATA(response_panel) = io_view->content( )->panel(
-      headertext = 'Response'
-      expanded = abap_true ).
-
-    " Response status bar
-    response_panel->content( )->toolbar( )->text(
-      text = |Status: { mv_response_status }|
-      class = get_status_state( mv_response_status )
-    )->toolbar_spacer( )->text(
-      text = |Time: { mv_response_time }|
-    )->toolbar_spacer( )->text(
-      text = |Size: { mv_response_size }| ).
-
-    " Response body
-    response_panel->content( )->panel(
-      headertext = 'Response Body'
-      expanded = abap_true
-    )->content( )->text_area(
-      value = mo_client->_bind( mv_response_body )
-      editable = abap_false
-      rows = '20'
-      width = '100%' ).
-
-    " Response headers
-    response_panel->content( )->panel(
-      headertext = 'Response Headers'
-      expanded = abap_true
-    )->content( )->table(
-      items = mo_client->_bind( mt_response_headers )
-    )->columns(
-      )->column( )->text( text = 'Name'
-      )->column( )->text( text = 'Value'
-    )->items( )->column_list_item(
-      )->cells(
-        )->text( text = '{name}'
-        )->text( text = '{value}'  ).
-
-  ENDMETHOD.
-
-
-  METHOD build_save_dialog.
-    DATA(dialog) = io_view->dialog(
-      title = 'Save Request'
-      contentwidth = '400px'
-      contentheight = '300px' ).
-
-    " Use simple_form for the dialog content
-    DATA(form_container) = dialog->content( )->simple_form(
-      editable = abap_true
-      layout = 'ResponsiveGridLayout' ).
-
-    form_container->label( text = 'Request Name' ).
-    form_container->input(
-      value = mo_client->_bind_edit( mv_request_name )
-      required = abap_true ).
-
-    form_container->label( text = 'Description' ).
-    form_container->text_area(
-      value = mo_client->_bind_edit( mv_request_desc )
-      rows = '3' ).
-
-    dialog->begin_button( )->button(
-      text = 'Save'
-      type = 'Emphasized'
-      press = mo_client->_event( 'SAVE_REQUEST_CONFIRM' ) ).
-
-    dialog->end_button( )->button(
-      text = 'Cancel'
-      press = mo_client->_event( 'SAVE_REQUEST_CANCEL' ) ).
-
-  ENDMETHOD.
-
-
-  METHOD build_sidebar.
-    DATA(sidebar_page) = io_view->page( title = 'Collections & Environment' ).
-    DATA(content) = sidebar_page->content( ).
-
-    " Environment selector
-    content->panel( headertext = 'Environment' expanded = abap_true )->content(
-      )->vbox( )->items(
-        )->combobox( selectedkey = mo_client->_bind_edit( mv_environment )
-                    items = mo_client->_bind( VALUE z2ui5_cl_util=>ty_t_name_value(
-                      ( n = 'Development' v = 'Development' )
-                      ( n = 'Staging' v = 'Staging' )
-                      ( n = 'Production' v = 'Production' ) ) ) ) .
-
-    " Collections panel
-    DATA(collections_panel) = content->panel( headertext = 'Request Collections' expanded = abap_true ).
-
-    collections_panel->content( )->list(
+    collections_panel->list(
       items = mo_client->_bind( mt_collections )
       mode = 'SingleSelectMaster'
-      itempress = mo_client->_event( val = 'LOAD_REQUEST' t_arg = VALUE #( ( `${id}` ) ) )
+      itempress = mo_client->_event(
+        val = 'LOAD_REQUEST'
+        t_arg = VALUE #( ( `${id}` ) ) )
     )->standard_list_item(
       title = '{name}'
       description = '{description}'
       info = '{method}'
       type = 'Active' ).
 
-    " Add new request button
-    collections_panel->content( )->button(
-      text = 'Save Current Request'
-      type = 'Emphasized'
-      press = mo_client->_event( 'SAVE_REQUEST' )
-      width = '100%' ).
+    " URL bar section
+    build_url_bar_inline( main_vbox ).
 
+    " Request configuration section
+    build_request_panel_inline( main_vbox ).
+
+    " Response section
+    build_response_panel_inline( main_vbox ).
   ENDMETHOD.
 
-
   METHOD build_url_bar.
-    " URL input section (based on reference implementation)
-    DATA(url_toolbar) = io_view->content( )->toolbar( ).
-    url_toolbar->toolbar_spacer( ).
-    url_toolbar->combobox(
-      selectedkey = mo_client->_bind_edit( mv_method )
-      width = '100px'
-      items = mo_client->_bind( VALUE z2ui5_cl_util=>ty_t_name_value(
-        ( n = 'GET' v = 'GET' )
-        ( n = 'POST' v = 'POST' )
-        ( n = 'PUT' v = 'PUT' )
-        ( n = 'DELETE' v = 'DELETE' )
-        ( n = 'PATCH' v = 'PATCH' ) ) ) ).
+    " URL input section with method buttons
+    DATA(url_panel) = io_view->content( )->panel(
+      headertext = 'Request URL'
+      expanded = abap_true
+      class = 'sapUiResponsiveMargin' ).
 
-    url_toolbar->input(
+    DATA(url_vbox) = url_panel->content( )->vbox( ).
+
+    " Method selection buttons
+    url_vbox->label( text = 'HTTP Method:' class = 'sapUiSmallMarginBottom' ).
+
+    DATA(method_buttons) = url_vbox->hbox( class = 'sapUiTinyMarginBottom' ).
+
+    method_buttons->button(
+      text = 'GET'
+      type = COND #( WHEN mv_method = 'GET' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_GET' )
+      class = 'sapUiTinyMarginEnd' ).
+
+    method_buttons->button(
+      text = 'POST'
+      type = COND #( WHEN mv_method = 'POST' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_POST' )
+      class = 'sapUiTinyMarginEnd' ).
+
+    method_buttons->button(
+      text = 'PUT'
+      type = COND #( WHEN mv_method = 'PUT' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_PUT' )
+      class = 'sapUiTinyMarginEnd' ).
+
+    method_buttons->button(
+      text = 'DELETE'
+      type = COND #( WHEN mv_method = 'DELETE' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_DELETE' )
+      class = 'sapUiTinyMarginEnd' ).
+
+    method_buttons->button(
+      text = 'PATCH'
+      type = COND #( WHEN mv_method = 'PATCH' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_PATCH' ) ).
+
+    " URL input
+    url_vbox->label( text = 'URL:' class = 'sapUiSmallMarginTop sapUiSmallMarginBottom' ).
+
+    DATA(url_hbox) = url_vbox->hbox( ).
+    url_hbox->input(
       value = mo_client->_bind_edit( mv_url )
       placeholder = 'Enter request URL...'
-      width = '70%' ).
+      width = '70%'
+      class = 'sapUiTinyMarginEnd' ).
 
-    url_toolbar->button(
-      text = 'Send'
+    url_hbox->button(
+      text = |Send { mv_method }|
       type = 'Emphasized'
       icon = 'sap-icon://paper-plane'
       press = mo_client->_event( 'SEND_REQUEST' ) ).
 
-    url_toolbar->button(
+    url_hbox->button(
       text = 'Save'
       type = 'Default'
       icon = 'sap-icon://save'
-      press = mo_client->_event( 'SAVE_REQUEST' ) ).
-    url_toolbar->toolbar_spacer( ).
-
+      press = mo_client->_event( 'SAVE_REQUEST' )
+      class = 'sapUiTinyMarginBegin' ).
   ENDMETHOD.
 
+  METHOD build_request_panel.
+    " Request configuration panel
+    DATA(request_panel) = io_view->content( )->panel(
+      headertext = 'Request Configuration'
+      expanded = abap_true
+      class = 'sapUiResponsiveMargin' ).
 
-  METHOD get_method_variant.
-    CASE to_upper( iv_method ).
-      WHEN 'GET'.
-        result = 'curl-method-get'.
-      WHEN 'POST'.
-        result = 'curl-method-post'.
-      WHEN 'PUT'.
-        result = 'curl-method-put'.
-      WHEN 'DELETE'.
-        result = 'curl-method-delete'.
-      WHEN 'PATCH'.
-        result = 'curl-method-patch'.
-      WHEN OTHERS.
-        result = ''.
-    ENDCASE.
-  ENDMETHOD.
+    DATA(request_vbox) = request_panel->content( )->vbox( ).
 
-
-  METHOD get_status_state.
-    IF iv_status CS '2'.
-      result = 'curl-status-success'.
-    ELSEIF iv_status CS '4' OR iv_status CS '5'.
-      result = 'curl-status-error'.
-    ELSEIF iv_status CS '3'.
-      result = 'curl-status-warning'.
-    ELSE.
-      result = ''.
+    " Request body section (only for POST/PUT/PATCH)
+    IF mv_method = 'POST' OR mv_method = 'PUT' OR mv_method = 'PATCH'.
+      request_vbox->label( text = 'Request Body (JSON):' class = 'sapUiMediumMarginBottom' ).
+      request_vbox->text_area(
+        value = mo_client->_bind_edit( mv_request_body )
+        placeholder = 'Enter JSON request body...'
+        rows = '8'
+        width = '100%'
+        class = 'sapUiMediumMarginBottom' ).
     ENDIF.
+
+    " Headers section (simplified)
+    request_vbox->label( text = 'Request Headers:' class = 'sapUiMediumMarginBottom' ).
+
+    " Simple headers table
+    DATA(headers_table) = request_vbox->table(
+      items = mo_client->_bind( mt_headers )
+      growing = abap_true
+      growingthreshold = '5'
+      class = 'sapUiMediumMarginBottom' ).
+
+    headers_table->columns(
+      )->column( width = '30%' )->text( text = 'Header Name'
+      )->column( width = '50%' )->text( text = 'Header Value'
+      )->column( width = '10%' )->text( text = 'Enabled'
+      )->column( width = '10%' )->text( text = 'Action' ).
+
+    headers_table->items( )->column_list_item(
+      )->cells(
+        )->input(
+          value = mo_client->_bind_edit( 'key' )
+          placeholder = 'Header name'
+        )->input(
+          value = mo_client->_bind_edit( 'value' )
+          placeholder = 'Header value'
+        )->checkbox(
+          selected = mo_client->_bind_edit( 'enabled' )
+        )->button(
+          icon = 'sap-icon://add'
+          press = mo_client->_event( 'ADD_HEADER' )
+          type = 'Transparent' ).
+
+    " Authentication section (simplified)
+    DATA(auth_panel) = request_vbox->panel(
+      headertext = 'Authentication'
+      expanded = abap_false
+      class = 'sapUiMediumMarginTop' ).
+
+    DATA(auth_vbox) = auth_panel->content( )->vbox( ).
+
+    auth_vbox->text(
+      text = 'Authentication support will be added in future versions'
+      class = 'sapUiMediumMargin' ).
   ENDMETHOD.
 
+  METHOD build_response_panel.
+    " Response panel
+    DATA(response_panel) = io_view->content( )->panel(
+      headertext = |Response: { mv_response_status }|
+      expanded = abap_true
+      class = 'sapUiResponsiveMargin' ).
 
-  METHOD handle_auth_change.
-    " Handle authentication type changes
-    " Clear sensitive data when changing auth type
-    IF ms_auth_config-type <> mv_auth_tab.
-      CLEAR: ms_auth_config-user, ms_auth_config-pass, ms_auth_config-token.
+    DATA(response_vbox) = response_panel->content( )->vbox( ).
+
+    " Response info
+    IF mv_response_time IS NOT INITIAL.
+      response_vbox->text(
+        text = |Time: { mv_response_time } Size: { mv_response_size }|
+        class = 'sapUiSmallMarginBottom' ).
     ENDIF.
-    ms_auth_config-type = mv_auth_tab.
+
+    " Response body
+    response_vbox->text_area(
+      value = mo_client->_bind( mv_response_body )
+      editable = abap_false
+      rows = '15'
+      width = '100%'
+      placeholder = 'Response will appear here...' ).
   ENDMETHOD.
 
+  METHOD build_sidebar.
+    DATA(sidebar_page) = io_view->page( title = 'Collections & Environment' ).
+    DATA(content) = sidebar_page->content( ).
 
-  METHOD handle_load_request.
-    TRY.
-        DATA(ls_request) = zcl_curl_data_manager=>load_request( iv_request_id ).
+    " Environment selector
+    content->panel(
+      headertext = 'Environment'
+      expanded = abap_true
+      class = 'sapUiResponsiveMargin'
+    )->content( )->vbox( )->items(
+      )->text( text = |Current: { mv_environment }| class = 'sapUiMediumMargin' ).
 
-        " Load request data into form
-        mv_url = ls_request-url.
-        mv_method = ls_request-method.
-        mv_request_body = ls_request-body.
+    " Collections panel
+    DATA(collections_panel) = content->panel(
+      headertext = 'Saved Requests'
+      expanded = abap_true
+      class = 'sapUiResponsiveMargin' ).
 
-        " Parse headers JSON (simplified parsing)
-        " In real implementation, use proper JSON parser
-        CLEAR mt_headers.
-        " For demo, set default headers
-        APPEND VALUE #( key = 'Content-Type' value = 'application/json' enabled = abap_true ) TO mt_headers.
-        add_empty_header_row( ).
-
-        " Switch to request tab
-        mv_selected_tab = 'request'.
-
-        show_message( iv_type = 'Success' iv_text = 'Request loaded successfully' ).
-
-      CATCH zcx_curl_data INTO DATA(lx_data).
-        show_message( iv_type = 'Error' iv_text = lx_data->get_text( ) ).
-    ENDTRY.
+    collections_panel->content( )->list(
+      items = mo_client->_bind( mt_collections )
+      mode = 'SingleSelectMaster'
+      itempress = mo_client->_event(
+        val = 'LOAD_REQUEST'
+        t_arg = VALUE #( ( `${id}` ) ) )
+    )->standard_list_item(
+      title = '{name}'
+      description = '{description}'
+      info = '{method}'
+      type = 'Active' ).
   ENDMETHOD.
 
-
-  METHOD handle_save_request.
-    TRY.
-        " Convert headers to JSON string
-        DATA(lv_headers_json) = '['.
-        LOOP AT mt_headers INTO DATA(header) WHERE key IS NOT INITIAL.
-          IF sy-tabix > 1.
-            lv_headers_json = |{ lv_headers_json },|.
-          ENDIF.
-          lv_headers_json = |{ lv_headers_json }\{"key":"{ header-key }","value":"{ header-value }","enabled":{ COND #( WHEN header-enabled = abap_true THEN 'true' ELSE 'false' ) }\}|.
-        ENDLOOP.
-        lv_headers_json = |{ lv_headers_json }]|.
-
-        " Create request item
-        DATA(ls_request) = VALUE zcl_curl_data_manager=>ty_request_item(
-          name = COND #( WHEN mv_request_name IS NOT INITIAL THEN mv_request_name ELSE |{ mv_method } { mv_url }| )
-          method = mv_method
-          url = mv_url
-          headers = lv_headers_json
-          body = mv_request_body
-          description = mv_request_desc
-        ).
-
-        " Save request
-        DATA(lv_id) = zcl_curl_data_manager=>save_request( ls_request ).
-
-        " Refresh collections
-        mt_collections = zcl_curl_data_manager=>get_all_requests( ).
-
-        " Clear form
-        CLEAR: mv_request_name, mv_request_desc.
-
-        show_message( iv_type = 'Success' iv_text = 'Request saved successfully' ).
-
-      CATCH zcx_curl_data INTO DATA(lx_data).
-        show_message( iv_type = 'Error' iv_text = lx_data->get_text( ) ).
-    ENDTRY.
+  METHOD add_empty_header_row.
+    APPEND VALUE #( key = '' value = '' enabled = abap_false ) TO mt_headers.
   ENDMETHOD.
 
-
-  METHOD handle_send_request.
-    TRY.
-        " Prepare request configuration
-        DATA(ls_config) = VALUE zcl_curl_http_service=>ty_request_config(
-          method = mv_method
-          url = process_environment_vars( mv_url )
-          headers = build_headers_from_table( )
-          body = mv_request_body
-          timeout = mv_timeout
-          auth_type = ms_auth_config-type
-          auth_user = ms_auth_config-user
-          auth_pass = ms_auth_config-pass
-          auth_token = ms_auth_config-token
-        ).
-
-        " Execute request
-        DATA(ls_response) = zcl_curl_http_service=>execute_request( ls_config ).
-
-        " Update UI with response
-        IF ls_response-error_message IS NOT INITIAL.
-          mv_response_status = |Error: { ls_response-error_message }|.
-          mv_response_body = ls_response-error_message.
-        ELSE.
-          mv_response_status = |{ ls_response-status_code } { ls_response-status_text }|.
-          mv_response_body = ls_response-body.
-        ENDIF.
-
-        mv_response_time = |{ ls_response-response_time } ms|.
-        mv_response_size = |{ ls_response-response_size } bytes|.
-
-        " Convert response headers
-        CLEAR mt_response_headers.
-        LOOP AT ls_response-headers INTO DATA(header).
-          APPEND VALUE #( name = header-name value = header-value ) TO mt_response_headers.
-        ENDLOOP.
-
-        " Switch to response tab
-        mv_selected_tab = 'response'.
-
-        " Show success message
-        show_message( iv_type = 'Success' iv_text = 'Request sent successfully' ).
-
-      CATCH zcx_rest_client INTO DATA(lx_rest).
-        mv_response_status = 'Request Failed'.
-        mv_response_body = lx_rest->get_text( ).
-        mv_response_time = '0 ms'.
-        mv_response_size = '0 bytes'.
-        show_message( iv_type = 'Error' iv_text = lx_rest->get_text( ) ).
-    ENDTRY.
+  METHOD add_empty_param_row.
+    APPEND VALUE #( key = '' value = '' enabled = abap_false ) TO mt_params.
   ENDMETHOD.
-
-
-  METHOD initialize_app.
-    TRY.
-        " Load collections and environments
-        mt_collections = zcl_curl_data_manager=>get_all_requests( ).
-
-        " Initialize sample environments
-        IF lines( mt_environments ) = 0.
-          APPEND VALUE #( name = 'Development' value = 'Development' ) TO mt_environments.
-          APPEND VALUE #( name = 'Staging' value = 'Staging' ) TO mt_environments.
-          APPEND VALUE #( name = 'Production' value = 'Production' ) TO mt_environments.
-        ENDIF.
-
-        " Initialize default headers if empty
-        IF lines( mt_headers ) = 0.
-          APPEND VALUE #( key = 'Content-Type' value = 'application/json' enabled = abap_true ) TO mt_headers.
-          APPEND VALUE #( key = 'Accept' value = 'application/json' enabled = abap_true ) TO mt_headers.
-          add_empty_header_row( ).
-        ENDIF.
-
-        " Initialize default params if empty
-        IF lines( mt_params ) = 0.
-          add_empty_param_row( ).
-        ENDIF.
-
-      CATCH zcx_curl_data INTO DATA(lx_data).
-        show_message( iv_type = 'Error' iv_text = lx_data->get_text( ) ).
-    ENDTRY.
-  ENDMETHOD.
-
 
   METHOD process_environment_vars.
     result = iv_text.
-    " Process environment variables - simplified implementation
-    " In real implementation, load from mt_environments and replace {{var}} patterns
-    REPLACE ALL OCCURRENCES OF '{{base_url}}' IN result WITH 'https://api.example.com'.
+    " Basic environment variable processing
+    REPLACE ALL OCCURRENCES OF '{{base_url}}' IN result WITH 'https://jsonplaceholder.typicode.com'.
     REPLACE ALL OCCURRENCES OF '{{api_key}}' IN result WITH 'demo_api_key'.
   ENDMETHOD.
 
+  METHOD handle_send_request.
+    " Same HTTP request logic as basic version with enhanced headers
+    DATA: lo_http_client TYPE REF TO if_http_client,
+          lv_start_time  TYPE timestampl,
+          lv_end_time    TYPE timestampl.
 
-  METHOD show_message.
-    " In real implementation, show message toast or message strip
-    " For now, just a placeholder
-    " MESSAGE iv_text TYPE iv_type.
+    CLEAR: mv_response_body, mv_response_time, mv_response_size.
+    mv_response_status = 'Sending request...'.
+
+    TRY.
+        GET TIME STAMP FIELD lv_start_time.
+
+        IF mv_url IS INITIAL.
+          mv_response_status = 'Error: URL is required'.
+          RETURN.
+        ENDIF.
+
+        " Process environment variables
+        DATA(processed_url) = process_environment_vars( mv_url ).
+
+        cl_http_client=>create_by_url(
+          EXPORTING url = processed_url
+          IMPORTING client = lo_http_client ).
+
+        lo_http_client->request->set_method( mv_method ).
+
+        " Add headers from simple fields
+        IF mv_content_type IS NOT INITIAL.
+          lo_http_client->request->set_header_field( name = 'Content-Type' value = mv_content_type ).
+        ENDIF.
+
+        IF mv_authorization IS NOT INITIAL.
+          lo_http_client->request->set_header_field( name = 'Authorization' value = mv_authorization ).
+        ENDIF.
+
+        " Parse and add custom headers
+        IF mv_custom_header1 IS NOT INITIAL AND mv_custom_header1 CS ':'.
+          SPLIT mv_custom_header1 AT ':' INTO DATA(header1_name) DATA(header1_value).
+          lo_http_client->request->set_header_field(
+            name = condense( header1_name )
+            value = condense( header1_value ) ).
+        ENDIF.
+
+        IF mv_custom_header2 IS NOT INITIAL AND mv_custom_header2 CS ':'.
+          SPLIT mv_custom_header2 AT ':' INTO DATA(header2_name) DATA(header2_value).
+          lo_http_client->request->set_header_field(
+            name = condense( header2_name )
+            value = condense( header2_value ) ).
+        ENDIF.
+
+        " Set default headers
+        lo_http_client->request->set_header_field( name = 'Accept' value = 'application/json' ).
+        lo_http_client->request->set_header_field( name = 'User-Agent' value = 'ZCurl-Enhanced/1.0' ).
+
+        " Set request body for POST/PUT/PATCH
+        IF ( mv_method = 'POST' OR mv_method = 'PUT' OR mv_method = 'PATCH' )
+           AND mv_request_body IS NOT INITIAL.
+          lo_http_client->request->set_cdata( mv_request_body ).
+          " Set Content-Type if not already set
+          IF mv_content_type IS INITIAL.
+            lo_http_client->request->set_header_field( name = 'Content-Type' value = 'application/json' ).
+          ENDIF.
+        ENDIF.
+
+        lo_http_client->send( ).
+        lo_http_client->receive( ).
+
+        " Get response
+        DATA: BEGIN OF ls_status,
+                code   TYPE i,
+                reason TYPE string,
+              END OF ls_status.
+        lo_http_client->response->get_status( IMPORTING code = ls_status-code reason = ls_status-reason ).
+        mv_response_status = |{ ls_status-code } { ls_status-reason }|.
+        mv_response_body = lo_http_client->response->get_cdata( ).
+
+        GET TIME STAMP FIELD lv_end_time.
+        DATA(lv_duration) = lv_end_time - lv_start_time.
+        mv_response_time = |{ lv_duration * 1000 DECIMALS = 0 } ms|.
+        mv_response_size = |{ strlen( mv_response_body ) } bytes|.
+
+        " Basic JSON formatting
+        IF mv_response_body CS '{' OR mv_response_body CS '['.
+          REPLACE ALL OCCURRENCES OF ',' IN mv_response_body WITH ',\n'.
+          REPLACE ALL OCCURRENCES OF '{' IN mv_response_body WITH '{\n  '.
+          REPLACE ALL OCCURRENCES OF '}' IN mv_response_body WITH '\n}'.
+        ENDIF.
+
+        " Store response headers
+        CLEAR mt_response_headers.
+        DATA(lt_header_fields) = VALUE tihttpnvp( ).
+        lo_http_client->response->get_header_fields( CHANGING fields = lt_header_fields ).
+        LOOP AT lt_header_fields INTO DATA(response_header).
+          APPEND VALUE #( name = response_header-name value = response_header-value ) TO mt_response_headers.
+        ENDLOOP.
+
+        lo_http_client->close( ).
+
+      CATCH cx_root INTO DATA(lx_error).
+        mv_response_status = |Error: { lx_error->get_text( ) }|.
+        mv_response_body = |Request failed:\n{ lx_error->get_text( ) }|.
+        mv_response_time = '0 ms'.
+        mv_response_size = '0 bytes'.
+
+        IF lo_http_client IS BOUND.
+          TRY.
+              lo_http_client->close( ).
+            CATCH cx_root ##NO_HANDLER.
+          ENDTRY.
+        ENDIF.
+    ENDTRY.
   ENDMETHOD.
 
+  METHOD handle_save_request.
+    " Simple save functionality
+    DATA(new_id) = |{ lines( mt_collections ) + 1 }|.
 
-  METHOD z2ui5_if_app~main.
-    " Store client reference
-    mo_client = client.
-    DATA(lo_client) = client->get( ).
+    APPEND VALUE #(
+      id = new_id
+      name = COND #( WHEN mv_request_name IS NOT INITIAL THEN mv_request_name
+                     ELSE |{ mv_method } Request| )
+      method = mv_method
+      url = mv_url
+      description = COND #( WHEN mv_request_desc IS NOT INITIAL THEN mv_request_desc
+                           ELSE |Saved at { sy-datum } { sy-uzeit }| )
+    ) TO mt_collections.
 
-    CASE client->get( )-event.
-      WHEN 'SEND_REQUEST'.
-        handle_send_request( ).
-      WHEN 'SAVE_REQUEST'.
-        mv_show_save_dialog = abap_true.
-      WHEN 'SAVE_REQUEST_CONFIRM'.
-        handle_save_request( ).
-        mv_show_save_dialog = abap_false.
-      WHEN 'SAVE_REQUEST_CANCEL'.
-        mv_show_save_dialog = abap_false.
-      WHEN 'LOAD_REQUEST'.
-        IF lines( lo_client-t_event_arg ) > 0.
-          handle_load_request( lo_client-t_event_arg[ 1 ] ).
-        ENDIF.
-      WHEN 'ADD_HEADER'.
-        add_empty_header_row( ).
-      WHEN 'ADD_PARAM'.
-        add_empty_param_row( ).
-      WHEN 'TAB_SELECT'.
-        IF lines( lo_client-t_event_arg ) > 0.
-          mv_selected_tab = lo_client-t_event_arg[ 1 ].
-        ENDIF.
-      WHEN 'REQUEST_TAB_SELECT'.
-        IF lines( lo_client-t_event_arg ) > 0.
-          mv_request_tab = lo_client-t_event_arg[ 1 ].
-        ENDIF.
-      WHEN 'RESPONSE_TAB_SELECT'.
-        IF lines( lo_client-t_event_arg ) > 0.
-          mv_response_tab = lo_client-t_event_arg[ 1 ].
-        ENDIF.
-      WHEN 'AUTH_CHANGE'.
-        handle_auth_change( ).
-      WHEN OTHERS.
-        initialize_app( ).
-    ENDCASE.
+    CLEAR: mv_request_name, mv_request_desc.
+    mv_response_status = 'Request saved successfully'.
+  ENDMETHOD.
 
-    DATA(view) = z2ui5_cl_xml_view=>factory( ).
-    build_main_view( view ).
+  METHOD handle_load_request.
+    READ TABLE mt_collections INTO DATA(collection) WITH KEY id = iv_request_id.
+    IF sy-subrc = 0.
+      mv_url = collection-url.
+      mv_method = collection-method.
+      mv_response_status = |Loaded: { collection-name }|.
+    ENDIF.
+  ENDMETHOD.
 
-    IF mv_show_save_dialog = abap_true.
-      build_save_dialog( view ).
+  METHOD handle_auth_change.
+    " Authentication change handling
+    ms_auth_config-type = mv_auth_tab.
+  ENDMETHOD.
+
+  METHOD build_url_bar_inline.
+    " URL input section with method buttons using proper UI5 controls
+    DATA(url_panel) = io_vbox->panel(
+      headertext = 'Request URL'
+      expanded = abap_true
+      class = 'sapUiResponsiveMargin' ).
+
+    DATA(url_vbox) = url_panel->vbox( class = 'sapUiMediumMargin' ).
+
+    " Method selection buttons
+    url_vbox->label( text = 'HTTP Method:' class = 'sapUiSmallMarginBottom' ).
+
+    DATA(method_buttons) = url_vbox->hbox( class = 'sapUiTinyMarginBottom' ).
+
+    method_buttons->button(
+      text = 'GET'
+      type = COND #( WHEN mv_method = 'GET' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_GET' )
+      class = 'sapUiTinyMarginEnd' ).
+
+    method_buttons->button(
+      text = 'POST'
+      type = COND #( WHEN mv_method = 'POST' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_POST' )
+      class = 'sapUiTinyMarginEnd' ).
+
+    method_buttons->button(
+      text = 'PUT'
+      type = COND #( WHEN mv_method = 'PUT' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_PUT' )
+      class = 'sapUiTinyMarginEnd' ).
+
+    method_buttons->button(
+      text = 'DELETE'
+      type = COND #( WHEN mv_method = 'DELETE' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_DELETE' )
+      class = 'sapUiTinyMarginEnd' ).
+
+    method_buttons->button(
+      text = 'PATCH'
+      type = COND #( WHEN mv_method = 'PATCH' THEN 'Emphasized' ELSE 'Default' )
+      press = mo_client->_event( 'METHOD_PATCH' ) ).
+
+    " URL input
+    url_vbox->label( text = 'URL:' class = 'sapUiSmallMarginTop sapUiSmallMarginBottom' ).
+
+    DATA(url_hbox) = url_vbox->hbox( ).
+    url_hbox->input(
+      value = mo_client->_bind_edit( mv_url )
+      placeholder = 'Enter request URL...'
+      width = '70%'
+      class = 'sapUiTinyMarginEnd' ).
+
+    url_hbox->button(
+      text = |Send { mv_method }|
+      type = 'Emphasized'
+      icon = 'sap-icon://paper-plane'
+      press = mo_client->_event( 'SEND_REQUEST' ) ).
+
+    url_hbox->button(
+      text = 'Save'
+      type = 'Default'
+      icon = 'sap-icon://save'
+      press = mo_client->_event( 'SAVE_REQUEST' )
+      class = 'sapUiTinyMarginBegin' ).
+  ENDMETHOD.
+
+  METHOD build_request_panel_inline.
+    " Request configuration panel using proper UI5 controls
+    DATA(request_panel) = io_vbox->panel(
+      headertext = 'Request Configuration'
+      expanded = abap_true
+      class = 'sapUiResponsiveMargin' ).
+
+    DATA(request_vbox) = request_panel->vbox( class = 'sapUiMediumMargin' ).
+
+    " Request body section (only for POST/PUT/PATCH)
+    IF mv_method = 'POST' OR mv_method = 'PUT' OR mv_method = 'PATCH'.
+      request_vbox->label( text = 'Request Body (JSON):' class = 'sapUiMediumMarginBottom' ).
+      request_vbox->text_area(
+        value = mo_client->_bind_edit( mv_request_body )
+        placeholder = 'Enter JSON request body...'
+        rows = '8'
+        width = '100%'
+        class = 'sapUiMediumMarginBottom' ).
     ENDIF.
 
-    client->view_display( view->stringify( ) ).
+    " Headers section (simplified without complex table binding)
+    request_vbox->label( text = 'Request Headers:' class = 'sapUiMediumMarginBottom' ).
 
+    " Simple form for headers
+    DATA(headers_form) = request_vbox->simple_form(
+      editable = abap_true
+      layout = 'ResponsiveGridLayout'
+      title = 'Common Headers'
+      class = 'sapUiMediumMarginBottom' ).
+
+    " Content-Type header
+    headers_form->label( text = 'Content-Type:' ).
+    headers_form->input(
+      value = mo_client->_bind_edit( mv_content_type )
+      placeholder = 'application/json' ).
+
+    " Authorization header
+    headers_form->label( text = 'Authorization:' ).
+    headers_form->input(
+      value = mo_client->_bind_edit( mv_authorization )
+      placeholder = 'Bearer your-token-here'
+      type = 'Password' ).
+
+    " Custom header 1
+    headers_form->label( text = 'Custom Header 1:' ).
+    headers_form->input(
+      value = mo_client->_bind_edit( mv_custom_header1 )
+      placeholder = 'Header-Name: Header-Value' ).
+
+    " Custom header 2
+    headers_form->label( text = 'Custom Header 2:' ).
+    headers_form->input(
+      value = mo_client->_bind_edit( mv_custom_header2 )
+      placeholder = 'Header-Name: Header-Value' ).
+
+    " Note about headers
+    request_vbox->text(
+      text = 'Headers will be automatically added. Use format "Header-Name: Header-Value" for custom headers.'
+      class = 'sapUiSmallMarginTop' ).
   ENDMETHOD.
+
+  METHOD build_response_panel_inline.
+    " Response panel using proper UI5 controls
+    DATA(response_panel) = io_vbox->panel(
+      headertext = |Response: { mv_response_status }|
+      expanded = abap_true
+      class = 'sapUiResponsiveMargin' ).
+
+    DATA(response_vbox) = response_panel->vbox( class = 'sapUiMediumMargin' ).
+
+    " Response info
+    IF mv_response_time IS NOT INITIAL.
+      response_vbox->text(
+        text = |Time: { mv_response_time } Size: { mv_response_size }|
+        class = 'sapUiSmallMarginBottom' ).
+    ENDIF.
+
+    " Response body
+    response_vbox->text_area(
+      value = mo_client->_bind( mv_response_body )
+      editable = abap_false
+      rows = '15'
+      width = '100%'
+      placeholder = 'Response will appear here...' ).
+  ENDMETHOD.
+
 ENDCLASS.

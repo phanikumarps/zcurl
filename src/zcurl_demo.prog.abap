@@ -74,26 +74,15 @@ START-OF-SELECTION.
 *&      Form  LAUNCH_BASIC_APP
 *&---------------------------------------------------------------------*
 FORM launch_basic_app.
+  " Direct HTTP service message - most reliable approach
+  MESSAGE 'ZCurl requires HTTP service configuration' TYPE 'I'.
+  MESSAGE 'Access via: http://yourserver:port/sap/bc/rest/zcurl/' TYPE 'I'.
 
-*  " Create the application instance
-*  DATA(lo_app) = NEW zcl_curl_abap( ).
-*
-*  TRY.
-*      " Method 1: Use abap2UI5 popup launcher (if available)
-*      z2ui5_cl_pop_to_run=>popup( lo_app ).
-*
-*    CATCH cx_sy_dyn_call_illegal_method.
-*      " Method 2: Try alternative launch method
-*      TRY.
-*          DATA(lo_client) = z2ui5_cl_pop_js_to_abap=>factory( ).
-*          lo_app->z2ui5_if_app~main( lo_client ).
-*
-*        CATCH cx_root.
-*          " Method 3: Show info message for HTTP access
-*          MESSAGE 'Please access ZCurl via HTTP service. Check transaction SICF.' TYPE 'I'.
-*      ENDTRY.
-*  ENDTRY.
-
+  " Show setup instructions
+  WRITE: / 'ZCurl Setup Instructions:',
+         / '1. Ensure dependencies are created',
+         / '2. Configure HTTP service in SICF',
+         / '3. Access via web browser'.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
