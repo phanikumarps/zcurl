@@ -49,73 +49,73 @@ CLASS zcl_curl_data_manager DEFINITION
            END OF ty_collection.
 
     TYPES: BEGIN OF ty_environment,
-             id          TYPE string,
-             name        TYPE string,
-             variables   TYPE string, " JSON string of variables
-             created_by  TYPE sy-uname,
-             created_at  TYPE timestampl,
-             updated_at  TYPE timestampl,
+             id         TYPE string,
+             name       TYPE string,
+             variables  TYPE string, " JSON string of variables
+             created_by TYPE sy-uname,
+             created_at TYPE timestampl,
+             updated_at TYPE timestampl,
            END OF ty_environment.
 
-    TYPES: tt_request_items TYPE TABLE OF ty_request_item,
-           tt_collections   TYPE TABLE OF ty_collection,
-           tt_environments  TYPE TABLE OF ty_environment.
+    TYPES: tt_request_items TYPE TABLE OF ty_request_item WITH EMPTY KEY,
+           tt_collections   TYPE TABLE OF ty_collection WITH EMPTY KEY,
+           tt_environments  TYPE TABLE OF ty_environment WITH EMPTY KEY.
 
     CLASS-METHODS: save_request
-                     IMPORTING iv_request    TYPE ty_request_item
-                     RETURNING VALUE(result) TYPE string " Returns ID
-                     RAISING   zcx_curl_data,
-                   
-                   load_request
-                     IMPORTING iv_id         TYPE string
-                     RETURNING VALUE(result) TYPE ty_request_item
-                     RAISING   zcx_curl_data,
-                   
-                   delete_request
-                     IMPORTING iv_id TYPE string
-                     RAISING   zcx_curl_data,
-                   
-                   get_all_requests
-                     IMPORTING iv_collection_id TYPE string OPTIONAL
-                     RETURNING VALUE(result)    TYPE tt_request_items
-                     RAISING   zcx_curl_data,
-                   
-                   save_collection
-                     IMPORTING iv_collection TYPE ty_collection
-                     RETURNING VALUE(result) TYPE string " Returns ID
-                     RAISING   zcx_curl_data,
-                   
-                   load_collection
-                     IMPORTING iv_id         TYPE string
-                     RETURNING VALUE(result) TYPE ty_collection
-                     RAISING   zcx_curl_data,
-                   
-                   get_all_collections
-                     RETURNING VALUE(result) TYPE tt_collections
-                     RAISING   zcx_curl_data,
-                   
-                   save_environment
-                     IMPORTING iv_environment TYPE ty_environment
-                     RETURNING VALUE(result)  TYPE string " Returns ID
-                     RAISING   zcx_curl_data,
-                   
-                   load_environment
-                     IMPORTING iv_id         TYPE string
-                     RETURNING VALUE(result) TYPE ty_environment
-                     RAISING   zcx_curl_data,
-                   
-                   get_all_environments
-                     RETURNING VALUE(result) TYPE tt_environments
-                     RAISING   zcx_curl_data,
-                   
-                   generate_id
-                     RETURNING VALUE(result) TYPE string.
+      IMPORTING iv_request    TYPE ty_request_item
+      RETURNING VALUE(result) TYPE string " Returns ID
+      RAISING   zcx_curl_data,
+
+      load_request
+        IMPORTING iv_id         TYPE string
+        RETURNING VALUE(result) TYPE ty_request_item
+        RAISING   zcx_curl_data,
+
+      delete_request
+        IMPORTING iv_id TYPE string
+        RAISING   zcx_curl_data,
+
+      get_all_requests
+        IMPORTING iv_collection_id TYPE string OPTIONAL
+        RETURNING VALUE(result)    TYPE tt_request_items
+        RAISING   zcx_curl_data,
+
+      save_collection
+        IMPORTING iv_collection TYPE ty_collection
+        RETURNING VALUE(result) TYPE string " Returns ID
+        RAISING   zcx_curl_data,
+
+      load_collection
+        IMPORTING iv_id         TYPE string
+        RETURNING VALUE(result) TYPE ty_collection
+        RAISING   zcx_curl_data,
+
+      get_all_collections
+        RETURNING VALUE(result) TYPE tt_collections
+        RAISING   zcx_curl_data,
+
+      save_environment
+        IMPORTING iv_environment TYPE ty_environment
+        RETURNING VALUE(result)  TYPE string " Returns ID
+        RAISING   zcx_curl_data,
+
+      load_environment
+        IMPORTING iv_id         TYPE string
+        RETURNING VALUE(result) TYPE ty_environment
+        RAISING   zcx_curl_data,
+
+      get_all_environments
+        RETURNING VALUE(result) TYPE tt_environments
+        RAISING   zcx_curl_data,
+
+      generate_id
+        RETURNING VALUE(result) TYPE string.
 
   PRIVATE SECTION.
     " In a real implementation, these would be database tables
     " For this demo, we'll use memory storage with class attributes
     CLASS-DATA: gt_requests     TYPE tt_request_items,
-                gt_collections TYPE tt_collections,
+                gt_collections  TYPE tt_collections,
                 gt_environments TYPE tt_environments.
 
     CLASS-METHODS: initialize_demo_data.
@@ -137,7 +137,7 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
     ls_request-id = result.
     ls_request-created_by = sy-uname.
     GET TIME STAMP FIELD ls_request-updated_at.
-    
+
     IF ls_request-created_at IS INITIAL.
       ls_request-created_at = ls_request-updated_at.
     ENDIF.
@@ -146,7 +146,9 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
     READ TABLE gt_requests INTO DATA(existing_request) WITH KEY id = result.
     IF sy-subrc = 0.
       " Update existing
-      MODIFY gt_requests FROM ls_request TRANSPORTING ALL FIELDS WHERE id = result.
+      MODIFY gt_requests FROM ls_request
+  TRANSPORTING name method url description updated_at
+  WHERE id = result.
     ELSE.
       " Insert new
       APPEND ls_request TO gt_requests.
@@ -208,7 +210,7 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
     ls_collection-id = result.
     ls_collection-created_by = sy-uname.
     GET TIME STAMP FIELD ls_collection-updated_at.
-    
+
     IF ls_collection-created_at IS INITIAL.
       ls_collection-created_at = ls_collection-updated_at.
     ENDIF.
@@ -217,7 +219,11 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
     READ TABLE gt_collections INTO DATA(existing_collection) WITH KEY id = result.
     IF sy-subrc = 0.
       " Update existing
-      MODIFY gt_collections FROM ls_collection TRANSPORTING ALL FIELDS WHERE id = result.
+      TRY.
+          gt_collections[ id = result ] = existing_collection.
+        CATCH cx_sy_itab_line_not_found.
+          APPEND existing_collection TO gt_collections.
+      ENDTRY.
     ELSE.
       " Insert new
       APPEND ls_collection TO gt_collections.
@@ -254,7 +260,7 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
     ls_environment-id = result.
     ls_environment-created_by = sy-uname.
     GET TIME STAMP FIELD ls_environment-updated_at.
-    
+
     IF ls_environment-created_at IS INITIAL.
       ls_environment-created_at = ls_environment-updated_at.
     ENDIF.
@@ -263,7 +269,11 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
     READ TABLE gt_environments INTO DATA(existing_env) WITH KEY id = result.
     IF sy-subrc = 0.
       " Update existing
-      MODIFY gt_environments FROM ls_environment TRANSPORTING ALL FIELDS WHERE id = result.
+      TRY.
+          gt_environments[ id = result ] = existing_env.
+        CATCH cx_sy_itab_line_not_found.
+          APPEND existing_env TO gt_environments.
+      ENDTRY.
     ELSE.
       " Insert new
       APPEND ls_environment TO gt_environments.
@@ -295,8 +305,8 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
     GET TIME STAMP FIELD lv_timestamp.
     CALL FUNCTION 'RANDOM_INT'
       EXPORTING
-        min = 1000
-        max = 9999
+        min   = 1000
+        max   = 9999
       IMPORTING
         value = lv_random.
 
@@ -306,9 +316,9 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
   METHOD initialize_demo_data.
     " Initialize some demo collections
     GET TIME STAMP FIELD DATA(current_time).
-    
+
     " Demo Collections
-    APPEND VALUE #( 
+    APPEND VALUE #(
       id = 'COL001'
       name = 'User Management APIs'
       description = 'Collection of user-related API endpoints'
@@ -316,8 +326,8 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
       created_at = current_time
       updated_at = current_time
     ) TO gt_collections.
-    
-    APPEND VALUE #( 
+
+    APPEND VALUE #(
       id = 'COL002'
       name = 'Product APIs'
       description = 'Collection of product-related API endpoints'
@@ -327,7 +337,7 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
     ) TO gt_collections.
 
     " Demo Environments
-    APPEND VALUE #( 
+    APPEND VALUE #(
       id = 'ENV001'
       name = 'Development'
       variables = '{"base_url":"https://api-dev.example.com","api_key":"dev_key_123"}'
@@ -335,8 +345,8 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
       created_at = current_time
       updated_at = current_time
     ) TO gt_environments.
-    
-    APPEND VALUE #( 
+
+    APPEND VALUE #(
       id = 'ENV002'
       name = 'Production'
       variables = '{"base_url":"https://api.example.com","api_key":"prod_key_456"}'
@@ -346,7 +356,7 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
     ) TO gt_environments.
 
     " Demo Requests
-    APPEND VALUE #( 
+    APPEND VALUE #(
       id = 'REQ001'
       name = 'Get All Users'
       method = 'GET'
@@ -358,8 +368,8 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
       created_at = current_time
       updated_at = current_time
     ) TO gt_requests.
-    
-    APPEND VALUE #( 
+
+    APPEND VALUE #(
       id = 'REQ002'
       name = 'Create User'
       method = 'POST'
@@ -371,8 +381,8 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
       created_at = current_time
       updated_at = current_time
     ) TO gt_requests.
-    
-    APPEND VALUE #( 
+
+    APPEND VALUE #(
       id = 'REQ003'
       name = 'Get User by ID'
       method = 'GET'
@@ -388,3 +398,4 @@ CLASS zcl_curl_data_manager IMPLEMENTATION.
   ENDMETHOD.
 
 ENDCLASS.
+
